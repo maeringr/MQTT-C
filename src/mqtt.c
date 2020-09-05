@@ -24,6 +24,9 @@ SOFTWARE.
 
 #include <mqtt.h>
 
+int has_subscribed = false;
+int has_connack    = false;
+
 /**
  * @file
  * @brief Implements the functionality of MQTT-C.
@@ -58,18 +61,19 @@ enum MQTTErrors mqtt_sync(struct mqtt_client *client) {
         if (err != MQTT_OK) return err;
     }
 
+    /* Call send */
+    err = __mqtt_send(client);
+
     struct mqtt_queued_message * connect_msg = mqtt_mq_find( & client->mq,
                                                              MQTT_CONTROL_CONNECT,
                                                              NULL );
-    if ( connect_msg == NULL || connect_msg->state != MQTT_QUEUED_UNSENT )
+    if ( ( connect_msg == NULL || connect_msg->state != MQTT_QUEUED_UNSENT )
+         && ( has_subscribed || ! has_connack ))
     {
         /* Call receive */
         err = __mqtt_recv(client);
         if (err != MQTT_OK) return err;
     }
-
-    /* Call send */
-    err = __mqtt_send(client);
 
     /* mqtt_reconnect will essentially be a disconnect if there is no callback */
     if (reconnecting && client->reconnect_callback != NULL) {
@@ -387,6 +391,8 @@ enum MQTTErrors mqtt_subscribe(struct mqtt_client *client,
                        const char* topic_name,
                        int max_qos_level)
 {
+    printf("mqtt.c: Setting has_subscripbe = 1\n");
+    has_subscribed = true;
     ssize_t rv;
     uint16_t packet_id;
     struct mqtt_queued_message *msg;
@@ -649,8 +655,10 @@ ssize_t __mqtt_recv(struct mqtt_client *client)
     ssize_t mqtt_recv_ret = MQTT_OK;
     MQTT_PAL_MUTEX_LOCK(&client->mutex);
 
+    bool last_was_connack_packet = false;
+
     /* read until there is nothing left to read, or there was an error */
-    while(mqtt_recv_ret == MQTT_OK) {
+    while ( mqtt_recv_ret == MQTT_OK && ! last_was_connack_packet ) {
         /* read in as many bytes as possible */
         ssize_t rv, consumed;
         struct mqtt_queued_message *msg = NULL;
@@ -718,6 +726,8 @@ ssize_t __mqtt_recv(struct mqtt_client *client)
         */
         switch (response.fixed_header.control_type) {
             case MQTT_CONTROL_CONNACK:
+                has_connack = true;
+                last_was_connack_packet = true;
                 /* release associated CONNECT */
                 msg = mqtt_mq_find(&client->mq, MQTT_CONTROL_CONNECT, NULL);
                 if (msg == NULL) {
